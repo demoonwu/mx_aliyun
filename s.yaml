@@ -1,0 +1,55 @@
+# ============================================================
+# Serverless Devs 部署模板（阿里云函数计算 3.0，fc3 组件）
+#
+# 使用前：
+#   npm i -g @serverless-devs/s     # 安装 s 工具
+#   s config add                    # 配置阿里云账号（AccessKey）
+# 部署：  cd mx_aliyun && s deploy
+# 移除：  s remove
+#
+# 注意：不同版本的 fc3 组件字段可能略有差异，报 schema 错时以
+# `s fc3` 文档或控制台创建的函数配置为准微调；控制台部署步骤见 README.md。
+# ============================================================
+edition: 3.0.0
+name: mx-aliyun
+access: default
+
+vars:
+  region: cn-hangzhou          # 就近选择地域；国内任意地域访问 eastmoney 均可
+
+resources:
+  mx-mcp-proxy:
+    component: fc3
+    props:
+      region: ${vars.region}
+      functionName: mx-mcp-proxy
+      description: 东方财富妙想(mx) MCP 稳定性中转代理
+      runtime: custom                       # Web 函数：自定义运行时（需自带/内置 Node >= 18）
+      code: ./
+      customRuntimeConfig:
+        command:
+          - node
+          - index.js
+        port: 9000                          # 与代码默认监听端口一致
+      memorySize: 512
+      timeout: 300                           # 必须 >= UPSTREAM_TIMEOUT_MS x 3 + 退避（约 275s）
+      instanceConcurrency: 10                # 单实例并发（妙想 Key 侧仍受上游限流约束）
+      environmentVariables:
+        MX_UPSTREAM: 'https://mxapi.eastmoney.com/mxds/mcp'
+        MX_AUTH_HEADER: 'em_api_key'         # 上游真实鉴权头名
+        MX_AUTH_MODE: 'raw'
+        TOOL_FILTER_REGEX: '^mx_'            # 只透传 mx_ 开头工具；置空字符串放行全部
+        HANDSHAKE_TIMEOUT_MS: '15000'
+        UPSTREAM_TIMEOUT_MS: '90000'
+        SESSION_TTL_MS: '360000'
+        TOOLS_CACHE_MS: '600000'
+        # PROXY_KEY: '换成你的门禁密钥'       # 可选：设置后客户端必须带 x-proxy-key 同值
+      triggers:
+        - triggerName: http
+          triggerType: http
+          triggerConfig:
+            qualifier: LATEST
+            authType: anonymous              # 建议上线后绑定自定义域名并开启 PROXY_KEY
+            methods:
+              - GET
+              - POST
