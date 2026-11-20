@@ -84,7 +84,7 @@ mx_aliyun/
 
 **双超时分离为什么关键**：CherryStudio 的版本协商探测只给 10s，超时即挂载失败。代理把握手超时压到 15s 内快速失败并自动重试（含 1s/3s 退避），即使客户端当次探测超时、转"legacy 模式"重试，第二次探测命中的已是**热会话**——这正是把"挂载失败"变成"慢一次"的关键。业务调用（自然语言查金融数据，本身就要 5–30s）单独放宽到 90s。
 
-**版本号透传**：客户端 `initialize` 请求的协议版本会原样转给上游参与协商，**上游返回的 `protocolVersion` 原样回给客户端**（不再回显客户端请求值）；上游不认客户端请求的版本时，自动回退 `2024-11-05` 重新协商。注意 `serverInfo`（`mx-mcp-aliyun-proxy` 及其版本号）是代理自身的标识，与上游无关。
+**原样透传**：客户端 `initialize` 请求的协议版本会原样转给上游参与协商，**上游返回的 `protocolVersion`、`serverInfo`、`capabilities` 原样回给客户端**（与直连上游完全一致，例如妙想协商版本为 `2025-11-25`、身份为 `mx-ds-mcp 1.0.0`）；上游不认客户端请求的版本时，自动回退 `2024-11-05` 重新协商；上游未返回身份信息时才兜底代理自身标识。代理自身版本号在函数启动日志首行（`mx MCP proxy v1.0.2 ...`）。
 
 ---
 
@@ -378,7 +378,7 @@ Claude Desktop、Cursor 等客户端使用 `type: "http"` 和 `url` 字段，`he
 
 - **切换前后对比**：观察 3–5 天 `%APPDATA%\CherryStudio\logs\app-error.*.log` 中 serverId `79e2fef9` 的 `REQUEST_TIMEOUT` / probe 500 条目是否消失。
 - **函数日志**：每次 tools/call 会打一行 `[call] <工具名> <耗时>ms ok|rpc-error|failed`，可直接统计成功率与延迟。
-- **会话日志**：`[session] new kh=... sid=... proto=...` 表示新握手，`proto=` 即上游协商确认的协议版本号；频繁出现说明上游会话保持不稳，可适当调大 `SESSION_TTL_MS`。
+- **会话日志**：`[session] new kh=... sid=... proto=... upstream=...` 表示新握手，`proto=` 为上游协商确认的协议版本号，`upstream=` 为上游 serverInfo 身份；频繁出现说明上游会话保持不稳，可适当调大 `SESSION_TTL_MS`。
 
 ---
 
@@ -397,6 +397,7 @@ Claude Desktop、Cursor 等客户端使用 `type: "http"` 和 `url` 字段，`he
 | 405 `method not allowed` | 对 `/mcp` 发了 GET：本代理无状态、不做 SSE 长连接；CherryStudio legacy 探测偶尔 GET 属正常，忽略即可 |
 | 版本协商 10s 超时（偶发） | 冷会话 + 上游瞬时慢：代理已在后台完成握手，客户端下次重连即恢复 |
 | initialize 返回的协议版本与客户端请求的不同 | 正常：透传的是上游协商确认的版本，客户端按 MCP 规范适配服务端返回值即可 |
+| CherryStudio 显示的服务器名称/版本（如 `mx-ds-mcp 1.0.0`） | 透传的上游身份，与直连一致；代理自身版本见函数启动日志首行 |
 | 工具调用 ~60s 被掐断 | 客户端侧超时限制：调大 CherryStudio 的 MCP 请求超时；代理侧默认已给到 90s |
 | FC 网关 504 | 函数超时 < `UPSTREAM_TIMEOUT_MS`×3：把函数超时调到 ≥ 300s |
 | tools/list 返回空 | 上游确实没返回：看函数日志 `[call] tools/list` 行；必要时清 `TOOLS_CACHE_MS` 缓存重启实例 |

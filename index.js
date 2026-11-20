@@ -15,8 +15,9 @@
 //   4. SSE 响应自动解析为 JSON-RPC；Accept-Encoding: identity 绕过
 //      上游网关透传压缩头导致的“上游响应格式无效”
 //   5. tools/list 结果缓存 10 分钟，并剥离 outputSchema（避免客户端强校验）
-//   6. initialize 版本协商透传：把客户端请求的协议版本转给上游协商，
-//      上游返回的 protocolVersion 原样回给客户端；上游不认时回退默认版本重试
+//   6. initialize 原样透传：客户端请求的协议版本转给上游协商，上游返回的
+//      protocolVersion / serverInfo / capabilities 原样回给客户端（与直连一致）；
+//      上游不认请求版本时回退默认版本重试；上游未返回身份时兜底代理自身标识
 //
 // 对客户端：无状态 Streamable HTTP MCP 服务（不下发 mcp-session-id，直接返回 JSON）
 // 对上游：  在实例内存中缓存 mx session，闲置 6 分钟过期
@@ -47,6 +48,7 @@ const BACKOFF_MS = (() => {
   try { return JSON.parse(process.env.BACKOFF_MS || '[0,1000,3000]'); } catch { return [0, 1000, 3000]; }
 })(); // 最多 3 次尝试
 const DEFAULT_PROTO = '2024-11-05';
+const PROXY_VERSION = '1.0.2';   // 代理自身版本（clientInfo 与启动日志用；serverInfo 已透传上游身份）
 const MAX_BODY = Number(process.env.MAX_BODY || 1024 * 1024);
 const INJECT_HEADERS = (() => {
   try { return JSON.parse(process.env.MX_INJECT_HEADERS || '{}'); } catch { return {}; }
@@ -168,7 +170,7 @@ async function handshake(auth, kh, requestedProto) {
   // 版本协商透传：优先用客户端请求的版本与上游握手；
   // 上游不认（HTTP 错误或 RPC 错误）时，回退 DEFAULT_PROTO 再试一次
   let ask = requestedProto || DEFAULT_PROTO;
-  let proto, newSid;
+  let proto, newSid, serverInfo, capabilities;
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const init = {
@@ -178,7 +180,7 @@ async function handshake(auth, kh, requestedProto) {
       params: {
         protocolVersion: ask,
         capabilities: {},
-        clientInfo: { name: 'mx-aliyun-proxy', version: '1.0.1' },
+        clientInfo: { name: 'mx-aliyun-proxy', version: PROXY_VERSION },
       },
     };
     try {
@@ -186,6 +188,8 @@ async function handshake(auth, kh, requestedProto) {
       const r = res.responses.find((m) => m && (m.result !== undefined || m.error !== undefined));
       if (r?.error) throw new Error(`上游 initialize 失败: ${r.error.message || JSON.stringify(r.error)}`);
       proto = r?.result?.protocolVersion || DEFAULT_PROTO;
+      serverInfo = r?.result?.serverInfo || null;
+      capabilities = r?.result?.capabilities || null;
       newSid = res.newSid;
       break;
     } catch (e) {
@@ -196,9 +200,9 @@ async function handshake(auth, kh, requestedProto) {
 
   await postUpstream({ jsonrpc: '2.0', method: 'notifications/initialized' }, auth, newSid, proto, HANDSHAKE_TIMEOUT_MS).catch(() => {});
 
-  const st = { sid: newSid, proto, updatedAt: Date.now() };
+  const st = { sid: newSid, proto, serverInfo, capabilities, updatedAt: Date.now() };
   sessions.set(kh, st);
-  console.log(`[session] new kh=${kh} sid=${newSid ? 'yes' : 'none'} proto=${proto}`);
+  console.log(`[session] new kh=${kh} sid=${newSid ? 'yes' : 'none'} proto=${proto} upstream=${serverInfo ? `${serverInfo.name}/${serverInfo.version}` : 'unknown'}`);
   return st;
 }
 
@@ -304,12 +308,12 @@ async function handleMessage(msg, auth, kh) {
   try {
     switch (method) {
       case 'initialize': {
-        // 版本协商透传：用客户端请求的版本与上游握手，上游返回什么版本号就原样回给客户端
+        // 原样透传：协议版本、serverInfo、capabilities 都以上游协商结果回给客户端（与直连一致）
         const st = await ensureSession(auth, kh, false, null, params.protocolVersion || null); // 顺便验证 Key 与上游连通性
         return ok(msg.id, {
           protocolVersion: st.proto,
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'mx-mcp-aliyun-proxy', version: '1.0.1' },
+          capabilities: st.capabilities || { tools: { listChanged: false } },
+          serverInfo: st.serverInfo || { name: 'mx-mcp-aliyun-proxy', version: PROXY_VERSION },
         });
       }
 
@@ -412,5 +416,5 @@ const server = http.createServer(async (req, res) => {
 server.requestTimeout = 0;      // 业务调用 + 重试可能超过默认 5 分钟
 server.headersTimeout = 65_000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`mx MCP proxy listening on :${PORT}  (POST /mcp, upstream=${UPSTREAM}, auth=${MX_AUTH_HEADER}, proto=${DEFAULT_PROTO})`);
+  console.log(`mx MCP proxy v${PROXY_VERSION} listening on :${PORT}  (POST /mcp, upstream=${UPSTREAM}, auth=${MX_AUTH_HEADER}, proto=${DEFAULT_PROTO})`);
 });
