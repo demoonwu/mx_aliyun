@@ -41,7 +41,7 @@ CherryStudio（或任意 MCP 客户端）
    │  ① 会话缓存复用 + 并发去重握手
    │  ② 重试矩阵（瞬时错误退避重试 / 会话失效重建）
    │  ③ tools/list 缓存 10 分钟
-   │  ④ SSE→JSON 解析、outputSchema 剥离、工具白名单
+   │  ④ SSE→JSON 解析、outputSchema 剥离
    ▼
 https://mxapi.eastmoney.com/mxds/mcp  （东方财富妙想上游，11 个 mx_* 工具）
 ```
@@ -73,7 +73,6 @@ mx_aliyun/
 | 4 | tools/list 缓存 10 分钟 | 工具挂载失败（0 个工具） | `TOOLS_CACHE_MS` |
 | 5 | SSE 响应自动解析为 JSON-RPC；`Accept-Encoding: identity` | 网关压缩头导致响应解析失败 | 内置 |
 | 6 | 剥离工具的 `outputSchema` | 客户端对 schema 强校验失败 | 内置 |
-| 7 | 工具白名单 | 只透传妙想工具 | `TOOL_FILTER_REGEX`（默认 `^mx_`） |
 
 **重试矩阵**（错误分类 → 动作）：
 
@@ -95,7 +94,6 @@ mx_aliyun/
 | `MX_AUTH_HEADER` | `em_api_key` | 发给上游的鉴权头名 |
 | `MX_AUTH_MODE` | `raw` | `raw`=自定义头 / `bearer`=Authorization |
 | `PROXY_KEY` | 空 | 可选门禁：设置后客户端须带 `x-proxy-key: 同值` |
-| `TOOL_FILTER_REGEX` | `^mx_` | 工具白名单正则；**置空字符串放行全部** |
 | `HANDSHAKE_TIMEOUT_MS` | `15000` | 握手（initialize）超时 |
 | `UPSTREAM_TIMEOUT_MS` | `90000` | tools/call、tools/list 超时 |
 | `SESSION_TTL_MS` | `360000` | 上游会话闲置过期 |
@@ -398,7 +396,6 @@ Claude Desktop、Cursor 等客户端使用 `type: "http"` 和 `url` 字段，`he
 | 版本协商 10s 超时（偶发） | 冷会话 + 上游瞬时慢：代理已在后台完成握手，客户端下次重连即恢复 |
 | 工具调用 ~60s 被掐断 | 客户端侧超时限制：调大 CherryStudio 的 MCP 请求超时；代理侧默认已给到 90s |
 | FC 网关 504 | 函数超时 < `UPSTREAM_TIMEOUT_MS`×3：把函数超时调到 ≥ 300s |
-| `工具 xx 未开放` | 命中白名单：确认识别工具名，或把 `TOOL_FILTER_REGEX` 置空放行 |
 | tools/list 返回空 | 上游确实没返回：看函数日志 `[call] tools/list` 行；必要时清 `TOOLS_CACHE_MS` 缓存重启实例 |
 
 ---

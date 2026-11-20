@@ -15,7 +15,6 @@
 //   4. SSE 响应自动解析为 JSON-RPC；Accept-Encoding: identity 绕过
 //      上游网关透传压缩头导致的“上游响应格式无效”
 //   5. tools/list 结果缓存 10 分钟，并剥离 outputSchema（避免客户端强校验）
-//   6. 工具白名单 TOOL_FILTER_REGEX（默认 ^mx_，妙想 11 个工具全部匹配）
 //
 // 对客户端：无状态 Streamable HTTP MCP 服务（不下发 mcp-session-id，直接返回 JSON）
 // 对上游：  在实例内存中缓存 mx session，闲置 6 分钟过期
@@ -38,11 +37,6 @@ const PORT = Number(process.env.FC_SERVER_PORT || process.env.PORT || 9000);
 const MX_AUTH_HEADER = process.env.MX_AUTH_HEADER || 'em_api_key';     // 上游要求的鉴权头名
 const MX_AUTH_MODE = (process.env.MX_AUTH_MODE || 'raw').toLowerCase(); // raw=自定义头 | bearer=Authorization
 const PROXY_KEY = String(process.env.PROXY_KEY || '').trim();           // 可选门禁（x-proxy-key）
-const TOOL_FILTER = (() => {
-  const src = process.env.TOOL_FILTER_REGEX;
-  if (src === '') return null; // 置空 = 放行全部工具
-  try { return new RegExp(src || '^mx_'); } catch { console.warn('[config] TOOL_FILTER_REGEX 非法，已放行全部工具'); return null; }
-})();
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 360_000);   // 上游 session 闲置 6 分钟视为过期
 const TOOLS_CACHE_MS = Number(process.env.TOOLS_CACHE_MS || 600_000);   // 工具列表缓存 10 分钟
 const HANDSHAKE_TIMEOUT_MS = Number(process.env.HANDSHAKE_TIMEOUT_MS || 15_000); // 握手快速失败
@@ -70,10 +64,6 @@ class UpstreamHttpError extends Error {
     super(`上游 HTTP ${status}: ${body}`);
     this.status = status;
   }
-}
-
-function isToolAllowed(name) {
-  return !TOOL_FILTER || TOOL_FILTER.test(name || '');
 }
 
 // JSON-RPC 错误分三类：
@@ -282,8 +272,8 @@ async function listTools(auth, kh) {
     cursor = r.result?.nextCursor;
   } while (cursor && all.length < 5000);
 
-  // 白名单过滤，并剥离 outputSchema，避免客户端强校验
-  const tools = all.filter((t) => isToolAllowed(t.name)).map(({ outputSchema, ...t }) => t);
+  // 上游给什么工具就原样透传，仅剥离 outputSchema，避免客户端强校验
+  const tools = all.map(({ outputSchema, ...t }) => t);
   toolsCache.set(kh, { tools, at: Date.now() });
   return tools;
 }
@@ -313,12 +303,6 @@ async function handleMessage(msg, auth, kh) {
 
       case 'tools/call': {
         const name = params.name;
-        if (!isToolAllowed(name)) {
-          return ok(msg.id, {
-            content: [{ type: 'text', text: `工具 ${name} 未开放（TOOL_FILTER_REGEX=${TOOL_FILTER}）` }],
-            isError: true,
-          });
-        }
         const t0 = Date.now();
         try {
           const r = await callUpstream(auth, kh, 'tools/call', { name, arguments: params.arguments || {} }, UPSTREAM_TIMEOUT_MS);
@@ -410,5 +394,5 @@ const server = http.createServer(async (req, res) => {
 server.requestTimeout = 0;      // 业务调用 + 重试可能超过默认 5 分钟
 server.headersTimeout = 65_000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`mx MCP proxy listening on :${PORT}  (POST /mcp, upstream=${UPSTREAM}, auth=${MX_AUTH_HEADER}, filter=${TOOL_FILTER}, proto=${DEFAULT_PROTO})`);
+  console.log(`mx MCP proxy listening on :${PORT}  (POST /mcp, upstream=${UPSTREAM}, auth=${MX_AUTH_HEADER}, proto=${DEFAULT_PROTO})`);
 });

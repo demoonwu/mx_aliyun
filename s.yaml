@@ -38,7 +38,6 @@ resources:
         MX_UPSTREAM: 'https://mxapi.eastmoney.com/mxds/mcp'
         MX_AUTH_HEADER: 'em_api_key'         # 上游真实鉴权头名
         MX_AUTH_MODE: 'raw'
-        TOOL_FILTER_REGEX: '^mx_'            # 只透传 mx_ 开头工具；置空字符串放行全部
         HANDSHAKE_TIMEOUT_MS: '15000'
         UPSTREAM_TIMEOUT_MS: '90000'
         SESSION_TTL_MS: '360000'
