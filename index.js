@@ -15,6 +15,8 @@
 //   4. SSE 响应自动解析为 JSON-RPC；Accept-Encoding: identity 绕过
 //      上游网关透传压缩头导致的“上游响应格式无效”
 //   5. tools/list 结果缓存 10 分钟，并剥离 outputSchema（避免客户端强校验）
+//   6. initialize 版本协商透传：把客户端请求的协议版本转给上游协商，
+//      上游返回的 protocolVersion 原样回给客户端；上游不认时回退默认版本重试
 //
 // 对客户端：无状态 Streamable HTTP MCP 服务（不下发 mcp-session-id，直接返回 JSON）
 // 对上游：  在实例内存中缓存 mx session，闲置 6 分钟过期
@@ -162,21 +164,35 @@ async function postUpstream(payload, auth, sid, proto, timeoutMs) {
   return { responses: Array.isArray(data) ? data : [data], newSid };
 }
 
-async function handshake(auth, kh) {
-  const init = {
-    jsonrpc: '2.0',
-    id: rid('init'),
-    method: 'initialize',
-    params: {
-      protocolVersion: DEFAULT_PROTO,
-      capabilities: {},
-      clientInfo: { name: 'mx-aliyun-proxy', version: '1.0.0' },
-    },
-  };
-  const { responses, newSid } = await postUpstream(init, auth, null, DEFAULT_PROTO, HANDSHAKE_TIMEOUT_MS);
-  const r = responses.find((m) => m && (m.result !== undefined || m.error !== undefined));
-  if (r?.error) throw new Error(`上游 initialize 失败: ${r.error.message || JSON.stringify(r.error)}`);
-  const proto = r?.result?.protocolVersion || DEFAULT_PROTO;
+async function handshake(auth, kh, requestedProto) {
+  // 版本协商透传：优先用客户端请求的版本与上游握手；
+  // 上游不认（HTTP 错误或 RPC 错误）时，回退 DEFAULT_PROTO 再试一次
+  let ask = requestedProto || DEFAULT_PROTO;
+  let proto, newSid;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const init = {
+      jsonrpc: '2.0',
+      id: rid('init'),
+      method: 'initialize',
+      params: {
+        protocolVersion: ask,
+        capabilities: {},
+        clientInfo: { name: 'mx-aliyun-proxy', version: '1.0.1' },
+      },
+    };
+    try {
+      const res = await postUpstream(init, auth, null, ask, HANDSHAKE_TIMEOUT_MS);
+      const r = res.responses.find((m) => m && (m.result !== undefined || m.error !== undefined));
+      if (r?.error) throw new Error(`上游 initialize 失败: ${r.error.message || JSON.stringify(r.error)}`);
+      proto = r?.result?.protocolVersion || DEFAULT_PROTO;
+      newSid = res.newSid;
+      break;
+    } catch (e) {
+      if (attempt === 0 && ask !== DEFAULT_PROTO) { ask = DEFAULT_PROTO; continue; }
+      throw e;
+    }
+  }
 
   await postUpstream({ jsonrpc: '2.0', method: 'notifications/initialized' }, auth, newSid, proto, HANDSHAKE_TIMEOUT_MS).catch(() => {});
 
@@ -186,14 +202,14 @@ async function handshake(auth, kh) {
   return st;
 }
 
-async function ensureSession(auth, kh, force = false, failedSid = null) {
+async function ensureSession(auth, kh, force = false, failedSid = null, requestedProto = null) {
   const cur = sessions.get(kh);
   if (cur && !force && Date.now() - cur.updatedAt < SESSION_TTL_MS) return cur;
   // 强制重建时，若别的并发请求已经换了新 session，直接复用
   if (cur && force && failedSid != null && cur.sid !== failedSid) return cur;
   if (inflight.has(kh)) return inflight.get(kh);
 
-  const p = handshake(auth, kh).finally(() => inflight.delete(kh));
+  const p = handshake(auth, kh, requestedProto).finally(() => inflight.delete(kh));
   inflight.set(kh, p);
   return p;
 }
@@ -287,13 +303,15 @@ async function handleMessage(msg, auth, kh) {
 
   try {
     switch (method) {
-      case 'initialize':
-        await ensureSession(auth, kh); // 顺便验证 Key 与上游连通性
+      case 'initialize': {
+        // 版本协商透传：用客户端请求的版本与上游握手，上游返回什么版本号就原样回给客户端
+        const st = await ensureSession(auth, kh, false, null, params.protocolVersion || null); // 顺便验证 Key 与上游连通性
         return ok(msg.id, {
-          protocolVersion: params.protocolVersion || DEFAULT_PROTO,
+          protocolVersion: st.proto,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'mx-mcp-aliyun-proxy', version: '1.0.0' },
+          serverInfo: { name: 'mx-mcp-aliyun-proxy', version: '1.0.1' },
         });
+      }
 
       case 'ping':
         return ok(msg.id, {});

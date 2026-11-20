@@ -1,6 +1,6 @@
 {
   "name": "mx-aliyun-mcp-proxy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "东方财富妙想(mx) MCP 稳定性中转代理：阿里云函数计算 Web 函数，无第三方依赖",
   "type": "module",
